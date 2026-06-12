@@ -49,8 +49,51 @@ function renderSettings(){ $('#settings').innerHTML=panel('Settings',`<label>The
 function openItem(type,id='',presetDate=''){const key=typeToKey(type);const item=id?state[key].find(x=>x.id===id):{};mType.value=type;mId.value=id;mName.value=item.name||'';mAmount.value=item.amount||0;mDate.value=presetDate||item.date||today();mRecurring.value=item.recurring||'none';mStatus.value=item.status||'planned';deleteBtn.style.display=id?'inline-block':'none';modalTitle.textContent=(id?'Edit ':'Add ')+type;modal.showModal()}
 modalForm.onsubmit=e=>{e.preventDefault();const type=mType.value,key=typeToKey(type),id=mId.value;let obj={id:id||uid(),name:mName.value,amount:Number(mAmount.value||0),date:mDate.value,recurring:mRecurring.value,status:mStatus.value,category:type==='paycheck'?'income':type==='bucket'?'variable':type==='goal'?'savings':type==='event'?'event':'fixed'};if(key==='bills')obj.funded=state[key].find(x=>x.id===id)?.funded||0;const i=state[key].findIndex(x=>x.id===id);if(i>=0){state[key][i]={...state[key][i],...obj};log(`${obj.name} updated`)}else{state[key].push(obj);log(`${obj.name} added`)}modal.close();persist('Saved')}
 deleteBtn.onclick=()=>{modal.close();deleteItem(typeToKey(mType.value),mId.value)};
+
+function asArray(v){return Array.isArray(v)?v:[]}
+function normalizeItem(x={}, fallbackCategory='fixed'){
+  const amount = x.amount ?? x.balance ?? x.value ?? 0;
+  const date = x.date ?? x.dueDate ?? x.nextDate ?? x.targetDate ?? '';
+  const status = x.status || (x.archived ? 'archived' : 'planned');
+  return {
+    ...x,
+    id: x.id || uid(),
+    name: x.name || x.title || 'Imported Item',
+    amount: Number(amount)||0,
+    date: date || today(),
+    recurring: x.recurring || x.frequency || 'none',
+    status,
+    category: x.category || x.type || fallbackCategory
+  }
+}
+function normalizeBackup(raw){
+  // Accept v5 backups, older Cozy Ledger backups, and daily backup wrappers.
+  let src = raw?.data && raw?.createdAt ? raw.data : raw;
+  if(src?.state) src = src.state;
+  if(src?.settings && typeof src.settings === 'object') src = {...src, ...src.settings};
+  const next = structuredClone(base);
+  next.theme = src.theme || src.settings?.theme || next.theme;
+  next.lookAheadDays = Number(src.lookAheadDays || src.settings?.lookAheadDays || next.lookAheadDays) || 30;
+  next.aiEndpoint = src.aiEndpoint || src.settings?.aiEndpoint || '';
+  next.history = asArray(src.history);
+  next.archives = asArray(src.archives);
+  next.lastDeleted = src.lastDeleted || null;
+  next.accounts = asArray(src.accounts).map(x=>normalizeItem(x,'account'));
+  next.bills = asArray(src.bills).map(x=>normalizeItem(x,'fixed'));
+  next.buckets = asArray(src.buckets).map(x=>normalizeItem(x,'variable'));
+  next.paychecks = asArray(src.paychecks).map(x=>normalizeItem(x,'income'));
+  next.goals = asArray(src.goals).map(x=>({...normalizeItem(x,'savings'), target:Number(x.target||0), current:Number(x.current||0)}));
+  next.events = [...asArray(src.events), ...asArray(src.customEvents)].map(x=>normalizeItem(x,'event'));
+  // Avoid a blank app if an older backup was missing a section.
+  if(!next.accounts.length) next.accounts = structuredClone(base.accounts);
+  if(!next.bills.length) next.bills = [];
+  if(!next.buckets.length) next.buckets = [];
+  if(!next.paychecks.length) next.paychecks = [];
+  if(!next.goals.length) next.goals = [];
+  return next;
+}
 function exportBackup(){const blob=new Blob([JSON.stringify(state,null,2)],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`cozy-ledger-v5-backup-${today()}.json`;a.click();log('Backup exported');persist('Backup exported')}
 function dailyBackup(){state.dailyBackup={createdAt:new Date().toLocaleString(),data:JSON.parse(JSON.stringify(state))};log('Daily backup created');persist('Daily backup created')}
-function importBackup(e){const f=e.target.files[0];if(!f)return;const r=new FileReader();r.onload=()=>{try{state={...structuredClone(base),...JSON.parse(r.result)};log('Backup imported');persist('Backup imported')}catch{alert('Could not import backup')}};r.readAsText(f)}
+function importBackup(e){const f=e.target.files[0];if(!f)return;const r=new FileReader();r.onload=()=>{try{const raw=JSON.parse(r.result);state=normalizeBackup(raw);log('Backup imported');persist('Backup imported')}catch(err){console.error(err);alert('Could not import backup. Make sure you selected a Cozy Ledger JSON backup file.')}};r.readAsText(f); e.target.value=''}
 function resetApp(){if(confirm('Reset all app data? Export a backup first.')){state=structuredClone(base);persist('Reset complete')}}
 render();
